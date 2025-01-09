@@ -1,0 +1,23 @@
+[package]
+name = "generalized-paillier"
+version = "0.1.0"
+edition = "2021"
+description = "Original Paillier encryption and generallized Paillier encrytion, i.e. Damgard-Jurik scheme"
+keywords = ["paillier-encryption", "Damgard-Jurik"]
+license = "Apache-2.0"
+
+[dependencies]
+crypto-bigint = { version = "0.6.0-rc.6", default-features = false, features = ["zeroize", "alloc"] }
+crypto-primes = { version = "0.6.0-pre.2", default-features = false }
+zeroize = { version = "1.5", features = ["alloc", "zeroize_derive"] }
+rand_core = { version = "0.6", default-features = false }
+num-traits = { version = "0.2.19", default-features = false }
+rayon = { version = "1", optional = true }
+
+[dev-dependencies]
+rand = "0.8"
+
+[features]
+default = ["parallel"]
+std = ["rand_core/std", "crypto-bigint/rand", "num-traits/std"]
+parallel = ["std", "rayon"]
