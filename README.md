@@ -1,3 +1,10 @@
+
+[![CI](https://github.com/lovesh/lovesh/generalized_paillier/actions/workflows/test.yml/badge.svg)](https://github.com/lovesh/lovesh/generalized_paillier/actions/workflows/test.yml)
+[![Apache-2](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/lovesh/lovesh/generalized_paillier/blob/master/LICENSE)
+[![Dependencies](https://deps.rs/repo/github/lovesh/lovesh/generalized_paillier/status.svg)](https://deps.rs/repo/github/lovesh/lovesh/generalized_paillier)
+[![crates.io](https://img.shields.io/crates/v/generalized-paillier)](https://crates.io/crates/generalized-paillier)
+[![docs.rs](https://img.shields.io/docsrs/generalized-paillier)](https://docs.rs/generalized-paillier/latest/generalized_paillier/)
+
 <!-- cargo-rdme start -->
 
 # Paillier encryption and Damgard-Jurik encryption

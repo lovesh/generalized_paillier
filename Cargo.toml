@@ -1,10 +1,11 @@
 [package]
 name = "generalized-paillier"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Original Paillier encryption and generallized Paillier encrytion, i.e. Damgard-Jurik scheme"
 keywords = ["paillier-encryption", "Damgard-Jurik"]
 license = "Apache-2.0"
+repository = "https://github.com/lovesh/generalized_paillier/"
 
 [dependencies]
 crypto-bigint = { version = "0.6.0-rc.6", default-features = false, features = ["zeroize", "alloc"] }

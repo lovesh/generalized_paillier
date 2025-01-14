@@ -5,6 +5,12 @@
 //! `DecryptionKey`, `EncryptionKey` and `Ciphertext` are generic over the limbs required to represent different values,
 //!  eg. `PRIME_LIMBS` are the limbs required to represent the prime numbers used in decryption key so for a 1024 bit prime
 //! on a 64-bit platform, `PRIME_LIMBS` would be 16.
+//! `MODULUS_LIMBS` and `MODULUS_SQR_LIMBS` are the limbs required to represent the modulus `n=p*q` and modulus square `n^2`.
+//!
+//! Following relations must hold between these constants
+//!
+//! - `MODULUS_LIMBS = 2 * PRIME_LIMBS`
+//! - `MODULUS_SQR_LIMBS = 2 * MODULUS_LIMBS`
 //!
 //! For `DecryptionKey` and `EncryptionKey`, there exist `PreparedDecryptionKey` and `PreparedEncryptionKey`
 //! which contain precomputations to speed up the operations.
@@ -34,15 +40,12 @@ pub struct DecryptionKey<const PRIME_LIMBS: usize> {
     pub q: Odd<Uint<PRIME_LIMBS>>,
 }
 
-/// Key used to encrypt message. `MODULUS_LIMBS` are the limbs required to represent the modulus `n` and
-/// `MODULUS_SQR_LIMBS` to represent square of the modulus `n^2`
+/// Key used to encrypt message. `MODULUS_LIMBS` are the limbs required to represent the modulus `n`
 #[derive(Debug, Clone, PartialEq)]
-pub struct EncryptionKey<const MODULUS_LIMBS: usize, const MODULUS_SQR_LIMBS: usize> {
+pub struct EncryptionKey<const MODULUS_LIMBS: usize>(
     /// Modulus `n`: product of prime numbers `p` and `q`
-    pub n: Odd<Uint<MODULUS_LIMBS>>,
-    /// Modulus squared, i.e. `n^2`
-    pub n_sqr: Odd<Uint<MODULUS_SQR_LIMBS>>,
-}
+    pub Odd<Uint<MODULUS_LIMBS>>,
+);
 
 /// `MODULUS_LIMBS` are the limbs required to represent the modulus `n` and `MODULUS_SQR_LIMBS` to represent square of the modulus `n^2`
 #[derive(Debug, Clone, PartialEq)]
@@ -52,6 +55,8 @@ pub struct Ciphertext<const MODULUS_LIMBS: usize, const MODULUS_SQR_LIMBS: usize
 
 // TODO: Montgomery params are not zeroized but they should be
 /// Decryption key with precomputations to make decryption and extracting randomness faster.
+/// `PRIME_LIMBS` are the limbs needed to represent prime `p` or `q`
+/// `MODULUS_LIMBS` and `MODULUS_SQR_LIMBS` are the limbs needed to represent the modulus `n`, modulus square `n^2`
 #[derive(Debug, Clone, PartialEq, Zeroize, ZeroizeOnDrop)]
 pub struct PreparedDecryptionKey<
     const PRIME_LIMBS: usize,
@@ -105,19 +110,24 @@ pub struct PreparedEncryptionKey<const MODULUS_LIMBS: usize, const MODULUS_SQR_L
     pub n_mtg: MontyForm<MODULUS_SQR_LIMBS>,
 }
 
-impl<const MODULUS_LIMBS: usize, const MODULUS_SQR_LIMBS: usize>
-    From<EncryptionKey<MODULUS_LIMBS, MODULUS_SQR_LIMBS>>
+impl<const MODULUS_LIMBS: usize, const MODULUS_SQR_LIMBS: usize> From<EncryptionKey<MODULUS_LIMBS>>
     for PreparedEncryptionKey<MODULUS_LIMBS, MODULUS_SQR_LIMBS>
+where
+    Uint<MODULUS_LIMBS>: Concat<Output = Uint<MODULUS_SQR_LIMBS>>,
 {
-    fn from(key: EncryptionKey<MODULUS_LIMBS, MODULUS_SQR_LIMBS>) -> Self {
-        let n_mtg = MontyParams::new_vartime(key.n.resize().to_odd().unwrap());
-        let n_sqr_mtg = MontyParams::new_vartime(key.n_sqr);
+    fn from(key: EncryptionKey<MODULUS_LIMBS>) -> Self {
+        const { assert!(2 * MODULUS_LIMBS == MODULUS_SQR_LIMBS) };
+        let (n_mtg, n_sqr) = join!(
+            MontyParams::new_vartime(key.0.resize().to_odd().unwrap()),
+            key.0.square().to_odd().unwrap()
+        );
+        let n_sqr_mtg = MontyParams::new_vartime(n_sqr);
         Self {
-            n: key.n,
-            n_sqr: key.n_sqr,
+            n: key.0,
+            n_sqr,
             n_mtg_params: n_mtg,
             n_sqr_mtg_params: n_sqr_mtg,
-            n_mtg: MontyForm::new(&key.n.resize::<MODULUS_SQR_LIMBS>(), n_sqr_mtg),
+            n_mtg: MontyForm::new(&key.0.resize::<MODULUS_SQR_LIMBS>(), n_sqr_mtg),
         }
     }
 }
@@ -126,26 +136,23 @@ impl<
         const PRIME_LIMBS: usize,
         const MODULUS_LIMBS: usize,
         const MODULUS_SQR_LIMBS: usize,
-        const MODULO_QUAD_LIMBS: usize,
+        const MODULUS_QUAD_LIMBS: usize,
         const PRIME_UNSAT_LIMBS: usize,
-        const MODULO_UNSAT_LIMBS: usize,
+        const MODULUS_UNSAT_LIMBS: usize,
     > PreparedDecryptionKey<PRIME_LIMBS, MODULUS_LIMBS, MODULUS_SQR_LIMBS>
 where
     Uint<PRIME_LIMBS>: Concat<Output = Uint<MODULUS_LIMBS>>,
     Uint<MODULUS_LIMBS>: Split<Output = Uint<PRIME_LIMBS>>,
     Uint<MODULUS_LIMBS>: Concat<Output = Uint<MODULUS_SQR_LIMBS>>,
     Uint<MODULUS_SQR_LIMBS>: Split<Output = Uint<MODULUS_LIMBS>>,
-    Uint<MODULUS_SQR_LIMBS>: Concat<Output = Uint<MODULO_QUAD_LIMBS>>,
-    Uint<MODULO_QUAD_LIMBS>: Split<Output = Uint<MODULUS_SQR_LIMBS>>,
+    Uint<MODULUS_SQR_LIMBS>: Concat<Output = Uint<MODULUS_QUAD_LIMBS>>,
+    Uint<MODULUS_QUAD_LIMBS>: Split<Output = Uint<MODULUS_SQR_LIMBS>>,
     Odd<Uint<PRIME_LIMBS>>:
         PrecomputeInverter<Inverter = SafeGcdInverter<PRIME_LIMBS, PRIME_UNSAT_LIMBS>>,
     Odd<Uint<MODULUS_LIMBS>>:
-        PrecomputeInverter<Inverter = SafeGcdInverter<MODULUS_LIMBS, MODULO_UNSAT_LIMBS>>,
+        PrecomputeInverter<Inverter = SafeGcdInverter<MODULUS_LIMBS, MODULUS_UNSAT_LIMBS>>,
 {
-    fn new(
-        dk: DecryptionKey<PRIME_LIMBS>,
-        ek: &EncryptionKey<MODULUS_LIMBS, MODULUS_SQR_LIMBS>,
-    ) -> Self {
+    fn new(dk: DecryptionKey<PRIME_LIMBS>, ek: &EncryptionKey<MODULUS_LIMBS>) -> Self {
         let p_mtg = MontyParams::new(dk.p);
         let q_mtg = MontyParams::new(dk.q);
         let p_sqr = dk.p.square();
@@ -163,11 +170,11 @@ where
         // n_inv_p = n^-1 mod p-1 and n_inv_q = n^-1 mod q-1.
         // unwrap is fine since gcd(n, p-1) = 1 and gcd(n, q-1) = 1
         let n_inv_p =
-            ek.n.inv_mod(&dk.p.wrapping_sub(&Uint::ONE).resize().to_nz().unwrap())
+            ek.0.inv_mod(&dk.p.wrapping_sub(&Uint::ONE).resize().to_nz().unwrap())
                 .unwrap()
                 .resize();
         let n_inv_q =
-            ek.n.inv_mod(&dk.q.wrapping_sub(&Uint::ONE).resize().to_nz().unwrap())
+            ek.0.inv_mod(&dk.q.wrapping_sub(&Uint::ONE).resize().to_nz().unwrap())
                 .unwrap()
                 .resize();
 
@@ -221,35 +228,21 @@ impl<const PRIME_LIMBS: usize> DecryptionKey<PRIME_LIMBS> {
         Self { p, q }
     }
 
+    /// Returns true if both primes are indeed primes
     pub fn is_valid<R: CryptoRngCore>(&self, rng: &mut R) -> bool {
         is_prime_with_rng(rng, self.p.as_ref()) && is_prime_with_rng(rng, self.q.as_ref())
     }
 }
 
-impl<const MODULUS_LIMBS: usize, const MODULUS_SQR_LIMBS: usize>
-    EncryptionKey<MODULUS_LIMBS, MODULUS_SQR_LIMBS>
-where
-    Uint<MODULUS_LIMBS>: Concat<Output = Uint<MODULUS_SQR_LIMBS>>,
-{
-    const CHECK_MOD_SQR_LIMBS: () = assert!((2 * MODULUS_LIMBS) == MODULUS_SQR_LIMBS);
-
+impl<const MODULUS_LIMBS: usize> EncryptionKey<MODULUS_LIMBS> {
     pub fn new<const PRIME_LIMBS: usize>(dk: &DecryptionKey<PRIME_LIMBS>) -> Self
     where
         Uint<PRIME_LIMBS>: Concat<Output = Uint<MODULUS_LIMBS>>,
     {
-        let _ = Self::CHECK_MOD_SQR_LIMBS;
         const { assert!(2 * PRIME_LIMBS == MODULUS_LIMBS) };
 
         let n: Uint<MODULUS_LIMBS> = dk.p.widening_mul(&dk.q).into();
-        let n_sqr = n.square();
-        Self {
-            n: n.to_odd().unwrap(), // unwrap is fine since n is odd since its product of 2 odds
-            n_sqr: n_sqr.to_odd().unwrap(),
-        }
-    }
-
-    pub fn is_valid(&self) -> bool {
-        self.n_sqr == self.n.square().to_odd().unwrap()
+        Self(n.to_odd().unwrap())
     }
 }
 
@@ -306,7 +299,7 @@ impl<const MODULUS_LIMBS: usize, const MODULUS_SQR_LIMBS: usize>
 
         // g = 1 + n
         // g^m = (1 + n)^m mod n^2 = 1 + n*m mod n^2 from binomial expansion
-        // g_m = 1 + n*m mod n^2
+        // r_n = r^n mod n^2
 
         let (g_m, r_n) = join!(
             {
@@ -323,19 +316,21 @@ impl<const MODULUS_LIMBS: usize, const MODULUS_SQR_LIMBS: usize>
         Ok(Self(c.retrieve()))
     }
 
-    /// Decrypt the ciphertext and returns the message. Assumes that the ciphertext is valid, i.e. in `[0, n^2)`
-    /// Uses CRT as described in section 7 of the paper
+    /// Decrypt the ciphertext and returns the message. Uses CRT as described in section 7 of the paper
     pub fn decrypt<const PRIME_LIMBS: usize>(
         &self,
-        dk: impl Into<PreparedDecryptionKey<PRIME_LIMBS, MODULUS_LIMBS, MODULUS_SQR_LIMBS>>,
-    ) -> Uint<MODULUS_LIMBS>
+        dk: PreparedDecryptionKey<PRIME_LIMBS, MODULUS_LIMBS, MODULUS_SQR_LIMBS>,
+        ek: &PreparedEncryptionKey<MODULUS_LIMBS, MODULUS_SQR_LIMBS>,
+    ) -> Result<Uint<MODULUS_LIMBS>, PaillierError>
     where
         Uint<PRIME_LIMBS>: Concat<Output = Uint<MODULUS_LIMBS>>,
     {
         let _ = Self::CHECK_MOD_SQR_LIMBS;
         const { assert!(2 * PRIME_LIMBS == MODULUS_LIMBS) };
 
-        let dk = dk.into();
+        if !self.is_valid(ek) {
+            return Err(PaillierError::CiphertextOutOfBound);
+        }
 
         // m_p = m mod p and m_q = m mod q
         let (m_p, m_q) = join!(
@@ -343,14 +338,14 @@ impl<const MODULUS_LIMBS: usize, const MODULUS_SQR_LIMBS: usize>
             self.message_mod_prime(dk.q, dk.q_mtg, dk.q_sqr_mtg, dk.h_q)
         );
 
-        crt_combine(&m_p, &m_q, dk.p_inv, &dk.p, dk.q_mtg)
+        Ok(crt_combine(&m_p, &m_q, dk.p_inv, &dk.p, dk.q_mtg))
     }
 
     /// Get randomness used in the ciphertext using CRT
     pub fn get_randomness<const PRIME_LIMBS: usize>(
         &self,
         msg: &Uint<MODULUS_LIMBS>,
-        dk: impl Into<PreparedDecryptionKey<PRIME_LIMBS, MODULUS_LIMBS, MODULUS_SQR_LIMBS>>,
+        dk: PreparedDecryptionKey<PRIME_LIMBS, MODULUS_LIMBS, MODULUS_SQR_LIMBS>,
         ek: impl Into<PreparedEncryptionKey<MODULUS_LIMBS, MODULUS_SQR_LIMBS>>,
     ) -> Result<Uint<MODULUS_LIMBS>, PaillierError>
     where
@@ -359,7 +354,6 @@ impl<const MODULUS_LIMBS: usize, const MODULUS_SQR_LIMBS: usize>
         let _ = Self::CHECK_MOD_SQR_LIMBS;
         const { assert!(2 * PRIME_LIMBS == MODULUS_LIMBS) };
 
-        let dk = dk.into();
         let ek = ek.into();
 
         if !bool::from(msg.ct_lt(&ek.n)) {
@@ -404,7 +398,7 @@ impl<const MODULUS_LIMBS: usize, const MODULUS_SQR_LIMBS: usize>
     }
 
     /// Combine another ciphertext with this ciphertext such that the resulting ciphertext
-    /// encrypts the sum of the 2 messages
+    /// encrypts the sum of the 2 messages. Assumes that the current ciphertext (`self`) is valid.
     pub fn add(
         &self,
         rhs: &Self,
@@ -422,7 +416,7 @@ impl<const MODULUS_LIMBS: usize, const MODULUS_SQR_LIMBS: usize>
     }
 
     /// Return an updated ciphertext which encrypts the product of current encrypted message and
-    /// the given message
+    /// the given message. Assumes that the current ciphertext (`self`) is valid.
     pub fn mul(
         &self,
         msg: &Uint<MODULUS_LIMBS>,
@@ -487,7 +481,7 @@ mod tests {
         ( $num_iters: ident, $prime_type:ident, $modulo_type:ident, $modulo_sqr_type: ident, $dk: ident ) => {
             let mut rng = OsRng::default();
             println!("Running {} iterations for {} bits prime", $num_iters, $prime_type::BITS);
-            let ek = EncryptionKey::<{ $modulo_type::LIMBS }, { $modulo_sqr_type::LIMBS }>::new(&$dk);
+            let ek = EncryptionKey::<{ $modulo_type::LIMBS }>::new(&$dk);
             let pek: PreparedEncryptionKey<{ $modulo_type::LIMBS }, { $modulo_sqr_type::LIMBS }> = ek.clone().into();
             let pdk = PreparedDecryptionKey::<{ $prime_type::LIMBS }, { $modulo_type::LIMBS }, { $modulo_sqr_type::LIMBS }>::new(
                 $dk.clone(),
@@ -499,13 +493,14 @@ mod tests {
             let mut rnd_times = vec![];
 
             for _ in 0..$num_iters {
-                let m = $modulo_type::random_mod(&mut rng, ek.n.as_nz_ref());
+                let m = $modulo_type::random_mod(&mut rng, ek.0.as_nz_ref());
                 let start = Instant::now();
                 let ct = Ciphertext::<{ $modulo_type::LIMBS }, { $modulo_sqr_type::LIMBS }>::new(&mut rng, &m, pek.clone()).unwrap();
                 enc_times.push(start.elapsed());
 
+                assert!(ct.is_valid(&pek));
                 let start = Instant::now();
-                let m_ = ct.decrypt(pdk.clone());
+                let m_ = ct.decrypt(pdk.clone(), &pek).unwrap();
                 dec_times.push(start.elapsed());
                 assert_eq!(m, m_);
 
@@ -516,13 +511,13 @@ mod tests {
                 let m_q = ct.message_mod_prime(pdk.q, pdk.q_mtg, pdk.q_sqr_mtg, pdk.h_q);
                 assert_eq!(m_q, m.rem(&$dk.q.resize().to_nz().unwrap()).resize());
 
-                let r = $modulo_type::random_mod(&mut rng, ek.n.as_nz_ref());
+                let r = $modulo_type::random_mod(&mut rng, ek.0.as_nz_ref());
                 let ct = Ciphertext::<{ $modulo_type::LIMBS }, { $modulo_sqr_type::LIMBS }>::new_given_randomness(
                     &m,
                     r.clone(),
                     pek.clone(),
                 ).unwrap();
-                let m_ = ct.decrypt(pdk.clone());
+                let m_ = ct.decrypt(pdk.clone(), &pek).unwrap();
                 assert_eq!(m, m_);
 
                 let start = Instant::now();
@@ -532,20 +527,20 @@ mod tests {
             }
 
             // Should error on message >= n
-            assert!(Ciphertext::<{ $modulo_type::LIMBS }, { $modulo_sqr_type::LIMBS }>::new(&mut rng, ek.n.as_ref(), pek.clone()).is_err());
-            assert!(Ciphertext::<{ $modulo_type::LIMBS }, { $modulo_sqr_type::LIMBS }>::new(&mut rng, &ek.n.get().add(Uint::ONE), pek.clone()).is_err());
+            assert!(Ciphertext::<{ $modulo_type::LIMBS }, { $modulo_sqr_type::LIMBS }>::new(&mut rng, ek.0.as_ref(), pek.clone()).is_err());
+            assert!(Ciphertext::<{ $modulo_type::LIMBS }, { $modulo_sqr_type::LIMBS }>::new(&mut rng, &ek.0.get().add(Uint::ONE), pek.clone()).is_err());
 
             // Should error on randomness >= n
-            let m = ek.n.sub(Uint::ONE);   // m = n-1
-            assert!(Ciphertext::<{ $modulo_type::LIMBS }, { $modulo_sqr_type::LIMBS }>::new_given_randomness_and_prepared_key(&m, ek.n.get(), pek.clone()).is_err());
-            assert!(Ciphertext::<{ $modulo_type::LIMBS }, { $modulo_sqr_type::LIMBS }>::new_given_randomness_and_prepared_key(&m, ek.n.get().add(Uint::ONE), pek.clone()).is_err());
+            let m = ek.0.sub(Uint::ONE);   // m = n-1
+            assert!(Ciphertext::<{ $modulo_type::LIMBS }, { $modulo_sqr_type::LIMBS }>::new_given_randomness_and_prepared_key(&m, ek.0.get(), pek.clone()).is_err());
+            assert!(Ciphertext::<{ $modulo_type::LIMBS }, { $modulo_sqr_type::LIMBS }>::new_given_randomness_and_prepared_key(&m, ek.0.get().add(Uint::ONE), pek.clone()).is_err());
 
-            let r = $modulo_type::random_mod(&mut rng, ek.n.as_nz_ref());
+            let r = $modulo_type::random_mod(&mut rng, ek.0.as_nz_ref());
             let ct = Ciphertext::<{ $modulo_type::LIMBS }, { $modulo_sqr_type::LIMBS }>::new_given_randomness_and_prepared_key(&m, r, pek.clone()).unwrap();
 
             // Should error on message >= n
-            assert!(ct.get_randomness::<{ $prime_type::LIMBS }>(ek.n.as_nz_ref(), pdk.clone(), pek.clone()).is_err());
-            assert!(ct.get_randomness::<{ $prime_type::LIMBS }>(&ek.n.get().add(Uint::ONE), pdk.clone(), pek.clone()).is_err());
+            assert!(ct.get_randomness::<{ $prime_type::LIMBS }>(ek.0.as_nz_ref(), pdk.clone(), pek.clone()).is_err());
+            assert!(ct.get_randomness::<{ $prime_type::LIMBS }>(&ek.0.get().add(Uint::ONE), pdk.clone(), pek.clone()).is_err());
 
             // With valid message, it works
             let r_ = ct.get_randomness::<{ $prime_type::LIMBS }>(&m, pdk.clone(), pek.clone()).unwrap();
@@ -561,22 +556,22 @@ mod tests {
         ( $num_iters: ident, $prime_type:ident, $modulo_type:ident, $modulo_sqr_type: ident, $dk: ident ) => {
             let mut rng = OsRng::default();
             println!("Running {} iterations for {} bits prime", $num_iters, $prime_type::BITS);
-            let ek = EncryptionKey::<{ $modulo_type::LIMBS }, { $modulo_sqr_type::LIMBS }>::new(&$dk);
+            let ek = EncryptionKey::<{ $modulo_type::LIMBS }>::new(&$dk);
             let pek: PreparedEncryptionKey<{ $modulo_type::LIMBS }, { $modulo_sqr_type::LIMBS }> = ek.clone().into();
             let pdk = PreparedDecryptionKey::<{$prime_type::LIMBS }, { $modulo_type::LIMBS }, { $modulo_sqr_type::LIMBS }>::new(
                 $dk.clone(),
                 &ek,
             );
-            let n_mtg = MontyParams::new_vartime(ek.n.to_odd().unwrap());
+            let n_mtg = MontyParams::new_vartime(ek.0.to_odd().unwrap());
 
             let mut sum_times = vec![];
             let mut product_times = vec![];
 
             for _ in 0..$num_iters {
-                let m1 = $modulo_type::random_mod(&mut rng, ek.n.as_nz_ref());
-                let r1 = $modulo_type::random_mod(&mut rng, ek.n.as_nz_ref());
-                let m2 = $modulo_type::random_mod(&mut rng, ek.n.as_nz_ref());
-                let r2 = $modulo_type::random_mod(&mut rng, ek.n.as_nz_ref());
+                let m1 = $modulo_type::random_mod(&mut rng, ek.0.as_nz_ref());
+                let r1 = $modulo_type::random_mod(&mut rng, ek.0.as_nz_ref());
+                let m2 = $modulo_type::random_mod(&mut rng, ek.0.as_nz_ref());
+                let r2 = $modulo_type::random_mod(&mut rng, ek.0.as_nz_ref());
 
                 let ct1 = Ciphertext::<{ $modulo_type::LIMBS }, { $modulo_sqr_type::LIMBS }>::new_given_randomness(
                     &m1,
@@ -589,22 +584,31 @@ mod tests {
                     pek.clone(),
                 ).unwrap();
 
+                assert!(ct1.is_valid(&pek));
+                assert!(ct2.is_valid(&pek));
+
                 let start = Instant::now();
                 let ct_sum = ct1.add(&ct2, pek.clone()).unwrap();
                 sum_times.push(start.elapsed());
-                let expected_msg = m1.add_mod(&m2, &ek.n);
-                let m_ = ct_sum.decrypt(pdk.clone());
+
+                assert!(ct_sum.is_valid(&pek));
+
+                let expected_msg = m1.add_mod(&m2, &ek.0);
+                let m_ = ct_sum.decrypt(pdk.clone(), &pek).unwrap();
                 assert_eq!(expected_msg, m_);
 
-                let expected_r = r1.mul_mod(&r2, ek.n.as_nz_ref());
+                let expected_r = r1.mul_mod(&r2, ek.0.as_nz_ref());
                 let r_ = ct_sum.get_randomness::<{$prime_type::LIMBS }>(&m_, pdk.clone(), pek.clone()).unwrap();
                 assert_eq!(expected_r, r_);
 
                 let start = Instant::now();
                 let ct_prod = ct1.mul(&m2, pek.clone()).unwrap();
                 product_times.push(start.elapsed());
-                let expected_msg = m1.mul_mod(&m2, ek.n.as_nz_ref());
-                let m_ = ct_prod.decrypt(pdk.clone());
+
+                assert!(ct_prod.is_valid(&pek));
+
+                let expected_msg = m1.mul_mod(&m2, ek.0.as_nz_ref());
+                let m_ = ct_prod.decrypt(pdk.clone(), &pek).unwrap();
                 assert_eq!(expected_msg, m_);
 
                 let expected_r = MontyForm::new(&r1, n_mtg).pow(&m2).retrieve();

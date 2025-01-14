@@ -1,6 +1,6 @@
 use core::ops::{Div, Sub};
 use crypto_bigint::{
-    modular::{MontyForm, MontyParams, SafeGcdInverter},
+    modular::{BoxedMontyForm, BoxedMontyParams, MontyForm, MontyParams, SafeGcdInverter},
     BoxedUint, Concat, NonZero, Odd, PrecomputeInverter, Uint, WideningMul, Zero,
 };
 use crypto_primes::generate_prime_with_rng;
@@ -32,7 +32,7 @@ where
     c.div(&d.to_nz().unwrap())
 }
 
-/// Returns Carmichael's totient of given primes which is `lcm(p-1, q-1)`
+/// Returns Carmichael's totient of a composite number formed of the given primes which is `lcm(p-1, q-1)`
 pub fn carmichael_totient<
     const PRIME_LIMBS: usize,
     const OUTPUT_LIMBS: usize,
@@ -52,7 +52,7 @@ where
     )
 }
 
-/// Returns Euler's totient of given primes which is `(p-1)*(q-1)`
+/// Returns Euler's totient of composite number formed of the given primes which is `(p-1)*(q-1)`
 pub fn euler_totient<const PRIME_LIMBS: usize, const OUTPUT_LIMBS: usize>(
     p: &Uint<PRIME_LIMBS>,
     q: &Uint<PRIME_LIMBS>,
@@ -65,7 +65,16 @@ where
 }
 
 /// Ensure the given value can fit in `max_limbs` limbs by ensuring the remaining most significant limbs to be 0
-pub fn ensure_upper_limbs_0<const L: usize>(val: &Uint<L>, max_limbs: usize) {
+pub fn ensure_size_bound<const L: usize>(val: &Uint<L>, max_limbs: usize) {
+    for (i, l_i) in val.as_limbs().iter().enumerate() {
+        if i >= max_limbs {
+            assert!(bool::from(l_i.is_zero()));
+        }
+    }
+}
+
+/// Same as `ensure_size_bound` above but works with BoxedUint
+pub fn ensure_size_bound_box(val: &BoxedUint, max_limbs: usize) {
     for (i, l_i) in val.as_limbs().iter().enumerate() {
         if i >= max_limbs {
             assert!(bool::from(l_i.is_zero()));
@@ -84,14 +93,24 @@ pub fn l<const U: usize, const N: usize, const O: usize>(
     let n_wide = n.resize();
     let (m, r) = m.div_rem(&n_wide.to_nz().unwrap());
     debug_assert!(bool::from(r.is_zero()));
-    ensure_upper_limbs_0(&m, O);
+    ensure_size_bound(&m, O);
     m.resize::<O>()
+}
+
+/// Same as `l` above but uses BoxedUint and expects the precision of `u` and `n` to be the same
+pub fn boxed_l(u: BoxedUint, n: &NonZero<BoxedUint>) -> BoxedUint {
+    // u-1
+    let m = u.sub(BoxedUint::one());
+    let (q, r) = m.div_rem(n);
+    debug_assert!(bool::from(r.is_zero()));
+    q
 }
 
 /// Given `r_p` and `r_q` satisfying `r = r_p mod p` and `r = r_q mod q` for primes `p` and `q`,
 /// return `r mod p*q` using the Chinese Remainder Theorem. Works as follows:
 /// `r = r_p mod p` => `r = r_p + t*p` and substitute for `r` in `r = r_q mod q` to get `r_p + t*p = r_q mod q`.
 /// Calculate `t` as `t = (r_q - r_p)/p mod q` and substitute `t` in `r = r_p + t*p` to get `r = r_p + ((r_q - r_p)/p mod q)*p`
+/// `p_inv = p^-1 mod q` and `q_mtg` are the Montgomery params for reducing mod `q`
 pub fn crt_combine<const LIMBS: usize, const WIDE_LIMBS: usize>(
     r_p: &Uint<LIMBS>,
     r_q: &Uint<LIMBS>,
@@ -112,20 +131,22 @@ where
 
 /// Same as `crt_combine` above but doesn't require the trait Concat to be implemented for `Uint<LIMBS>` and
 /// thus uses BoxedUint
-pub fn crt_combine_using_box<const LIMBS: usize, const WIDE_LIMBS: usize>(
-    r_p: &Uint<LIMBS>,
-    r_q: &Uint<LIMBS>,
-    p_inv: MontyForm<LIMBS>,
-    p: &Uint<LIMBS>,
-    q_mtg: MontyParams<LIMBS>,
-) -> Uint<WIDE_LIMBS> {
+pub fn boxed_crt_combine(
+    r_p: BoxedUint,
+    r_q: BoxedUint,
+    p_inv: BoxedMontyForm,
+    p: BoxedUint,
+    q_mtg: BoxedMontyParams,
+) -> BoxedUint {
     // r_q - r_p mod q
-    let diff = MontyForm::new(r_q, q_mtg) - MontyForm::new(r_p, q_mtg);
+    let diff = BoxedMontyForm::new(r_q, q_mtg.clone()) - BoxedMontyForm::new(r_p.clone(), q_mtg);
     // (r_q - r_p)/p mod q
     let t = (diff * p_inv).retrieve();
-    let t_box = BoxedUint::from(t);
-    let m_box = t_box.widening_mul(BoxedUint::from(p)) + BoxedUint::from(r_p);
-    Uint::<WIDE_LIMBS>::from_le_slice(m_box.to_le_bytes().as_ref())
+    t.widening_mul(p) + BoxedUint::from(r_p)
+}
+
+pub fn uint_from_boxed_int<const LIMBS: usize>(n: &BoxedUint) -> Uint<LIMBS> {
+    Uint::<LIMBS>::from_le_slice(n.to_le_bytes().as_ref())
 }
 
 #[cfg(feature = "parallel")]
@@ -191,7 +212,7 @@ mod tests {
     use crypto_primes::is_prime_with_rng;
     use num_traits::identities::One;
     use rand_core::OsRng;
-    use std::time::Instant;
+    use std::{ops::Add, time::Instant};
 
     #[test]
     fn math_properties() {
@@ -263,6 +284,24 @@ mod tests {
             // a^x mod p^2 mod p
             let a_x_4 = a_x.rem(&p.resize().to_nz().unwrap());
             assert_eq!(a_x_4, a_x_3);
+
+            let s = U128::random_mod(&mut rng, &n.to_nz().unwrap());
+            let s_mod_p = s.rem(&p.resize().to_nz().unwrap()).resize();
+            let s_inv = s_mod_p.inv_mod(&p).unwrap().resize();
+            assert_eq!(s_inv, s.inv_mod(&p.resize()).unwrap());
+        }
+    }
+
+    #[test]
+    fn log_check() {
+        let mut rng = OsRng::default();
+        let n = U128::random(&mut rng).to_nz().unwrap();
+        for _ in 0..100 {
+            let a = U64::random(&mut rng);
+            let b = a.widening_mul(&n);
+            // c = n*a + 1
+            let c = b.add(&Uint::ONE);
+            assert_eq!(a, l(&c, &n));
         }
     }
 
@@ -287,8 +326,12 @@ mod tests {
                 let q = generate_prime_with_rng::<$prime_type>(&mut rng, $prime_type::BITS);
                 let n = p.widening_mul(&q);
                 let q_mtg = MontyParams::new(q.to_odd().unwrap());
+                let q_mtg_box = BoxedMontyParams::new(BoxedUint::from(q).to_odd().unwrap());
                 // p^-1 mod q
                 let p_inv = MontyForm::new(&p, q_mtg).inv().unwrap();
+                let p_inv_box = BoxedMontyForm::new(BoxedUint::from(p), q_mtg_box.clone())
+                    .invert()
+                    .unwrap();
                 for _ in 0..100 {
                     let a = $product_type::random_mod(&mut rng, &n.to_nz().unwrap());
                     // a_p = a mod p
@@ -301,7 +344,16 @@ mod tests {
                             &a_p, &a_q, p_inv, &p, q_mtg
                         )
                     );
-                    assert_eq!(a, crt_combine_using_box(&a_p, &a_q, p_inv, &p, q_mtg));
+                    assert_eq!(
+                        a,
+                        uint_from_boxed_int(&boxed_crt_combine(
+                            BoxedUint::from(a_p),
+                            BoxedUint::from(a_q),
+                            p_inv_box.clone(),
+                            BoxedUint::from(p),
+                            q_mtg_box.clone()
+                        ))
+                    );
                 }
             };
         }
